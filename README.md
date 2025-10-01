@@ -14,7 +14,8 @@ Ya'll can get the idea here and do whatever, edit it to support rotations tho I 
 Or it might be simple like location, X+ to Y+ or Y- etc. Dunno, don't care. Yet.
 
 Also, found myself flipping axis locations or rotations or swapping bone keyframes a lot so this should help with that.
-Will make a follow up video soon to showcase the general usecase etc.
+
+Planned: Swap keyframes/fcurves by channels and auto keyframe/fcurve rotation and value combine.
 
 Here's a video hopefully somewhat explaining how 'copy bone keyframes with different orientations' works:
 
