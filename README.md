@@ -3,14 +3,10 @@ Copy bone keyframes between pairs with different orientations.
 E.g. You, like me, goofed up, made a IK effector bone in a particular orientation, made 20+ animations and then you realize... the copy pose and copy pose flipped keeps messing up because you oriented bones to fit you're 'logic' rather then the softwares way of work.
 
 How do you fix that? Welp, since Blender ofc don't have a reorientation feature...
-
 Either copy old IK keyframes on new one by single channel and adjust/flip as needed or...
 Make my own. And I did.
-
 So far it only copies over location XYZ keyframes from one bone to another as that's the only thing I need.
-
 Ya'll can get the idea here and do whatever, edit it to support rotations tho I suk at math and quaterntions so I don't even know where I'd begin to make a proper reorientation code for that.
-
 Or it might be simple like location, X+ to Y+ or Y- etc. Dunno, don't care. Yet.
 
 
