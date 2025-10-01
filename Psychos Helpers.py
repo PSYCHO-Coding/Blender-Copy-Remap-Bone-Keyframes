@@ -257,7 +257,7 @@ class SwapAndFlipKeyframesPanel(bpy.types.Panel):
             op.axis = axis
 
             op = row.operator("object.flip_keyframe_axis", text=f"Flip {label} Rot")
-            op.property = 'rotation_euler'
+            op.property = 'rotation'
             op.axis = axis
 
             op = row.operator("object.flip_keyframe_axis", text=f"Flip {label} Scale")
@@ -268,12 +268,41 @@ class SwapAndFlipKeyframesPanel(bpy.types.Panel):
         row = layout.row()
         layout.operator("object.swap_keyframes", text="Swap Keyframes")
 
+        row = layout.row()
+        row = layout.row()
+
+        # Location swaps
+        layout.label(text="Location Axis Swap:")
+        row = layout.row()
+        op = row.operator("object.swap_keyframe_axis", text="X ↔ Y")
+        op.property = "location"; op.axis_a = 0; op.axis_b = 1
+        op = row.operator("object.swap_keyframe_axis", text="X ↔ Z")
+        op.property = "location"; op.axis_a = 0; op.axis_b = 2
+        row = layout.row()
+        op = row.operator("object.swap_keyframe_axis", text="Y ↔ Z")
+        op.property = "location"; op.axis_a = 1; op.axis_b = 2
+
+        # Rotation swaps
+        layout.label(text="Rotation Axis Swap:")
+        row = layout.row()
+        op = row.operator("object.swap_keyframe_axis", text="X ↔ Y")
+        op.property = "rotation"; op.axis_a = 0; op.axis_b = 1
+        op = row.operator("object.swap_keyframe_axis", text="X ↔ Z")
+        op.property = "rotation"; op.axis_a = 0; op.axis_b = 2
+        row = layout.row()
+        op = row.operator("object.swap_keyframe_axis", text="Y ↔ Z")
+        op.property = "rotation"; op.axis_a = 1; op.axis_b = 2
+
+        row = layout.row()
+        row = layout.row()
+        layout.prop(context.scene, "use_quaternion_rotation", text="Use Quaternions")
+
 class FlipKeyframeAxisOperator(bpy.types.Operator):
     """Flip Keyframe Curve Values for a Specific Axis and Property"""
     bl_idname = "object.flip_keyframe_axis"
     bl_label = "Flip Keyframe Axis"
     
-    property: bpy.props.StringProperty()  # 'location' or 'rotation_euler'
+    property: bpy.props.StringProperty()  # 'location', 'rotation', or 'scale'
     axis: bpy.props.IntProperty()         # 0=X, 1=Y, 2=Z
 
     def execute(self, context):
@@ -292,13 +321,25 @@ class FlipKeyframeAxisOperator(bpy.types.Operator):
             self.report({'ERROR'}, "No action found on this object.")
             return {'CANCELLED'}
 
-        data_path = f'pose.bones["{pose_bone.name}"].{self.property}'
+        # Decide rotation type
+        prop = self.property
+        axis = self.axis
+        if prop == "rotation":
+            if context.scene.use_quaternion_rotation:
+                prop = "rotation_quaternion"
+                # remap Euler X,Y,Z -> Quaternion X,Y,Z (skip W)
+                axis_map = {0: 1, 1: 2, 2: 3}
+                axis = axis_map.get(axis, axis)
+            else:
+                prop = "rotation_euler"
+
+        data_path = f'pose.bones["{pose_bone.name}"].{prop}'
         
         fcurve = next((fc for fc in action.fcurves 
-                       if fc.data_path == data_path and fc.array_index == self.axis), None)
+                       if fc.data_path == data_path and fc.array_index == axis), None)
 
         if not fcurve:
-            self.report({'WARNING'}, f"No keyframes found for {self.property} axis {self.axis}.")
+            self.report({'WARNING'}, f"No keyframes found for {prop} axis {axis}.")
             return {'CANCELLED'}
 
         for kp in fcurve.keyframe_points:
@@ -307,8 +348,9 @@ class FlipKeyframeAxisOperator(bpy.types.Operator):
             kp.handle_right[1] *= -1
 
         fcurve.update()
-        self.report({'INFO'}, f"Flipped {self.property} axis {self.axis} keyframes for {pose_bone.name}")
+        self.report({'INFO'}, f"Flipped {prop} axis {axis} keyframes for {pose_bone.name}")
         return {'FINISHED'}
+
 
 class RemapAllBonesOperator(bpy.types.Operator):
     """Remap all bones based on mapper and suffix rules."""
@@ -420,7 +462,7 @@ class RemapAllBonesOperator(bpy.types.Operator):
                 return {'CANCELLED'}
 
             for fcurve in action.fcurves:
-                # Only process location keyframes
+                # Only process location keyframes !!! LIKES TO CRASH BLENDER ON SOME ANIMATIONS FOR SOME REASON !!!
                 if not fcurve.data_path.startswith(f'pose.bones["{source_bone.name}"].location'):
                     continue
 
@@ -587,6 +629,75 @@ class SwapKeyframesOperator(bpy.types.Operator):
         self.report({'INFO'}, f"Swapped keyframes between '{source_bone.name}' and '{target_bone.name}'.")
         return {'FINISHED'}
 
+class SwapKeyframeAxisOperator(bpy.types.Operator):
+    """Swap keyframes between two axes of the same property"""
+    bl_idname = "object.swap_keyframe_axis"
+    bl_label = "Swap Axis Keyframes"
+
+    property: bpy.props.StringProperty(default="location")  # default = location
+    axis_a: bpy.props.IntProperty()
+    axis_b: bpy.props.IntProperty()
+
+    def execute(self, context):
+        obj = context.object
+        if not obj or obj.type != 'ARMATURE':
+            self.report({'ERROR'}, "Active object is not an armature.")
+            return {'CANCELLED'}
+
+        pose_bone = context.active_pose_bone
+        if not pose_bone:
+            self.report({'ERROR'}, "No active pose bone.")
+            return {'CANCELLED'}
+
+        action = obj.animation_data.action if obj.animation_data else None
+        if not action:
+            self.report({'ERROR'}, "No action found on this object.")
+            return {'CANCELLED'}
+
+        # Decide rotation type
+        prop = self.property
+        if prop == "rotation":
+            if context.scene.use_quaternion_rotation:
+                prop = "rotation_quaternion"
+                # remap indices: Euler (0,1,2) → Quaternion (1,2,3)
+                axis_map = {0: 1, 1: 2, 2: 3}
+                axis_a = axis_map.get(self.axis_a, self.axis_a)
+                axis_b = axis_map.get(self.axis_b, self.axis_b)
+            else:
+                prop = "rotation_euler"
+                axis_a, axis_b = self.axis_a, self.axis_b
+        else:
+            axis_a, axis_b = self.axis_a, self.axis_b
+
+        data_path = f'pose.bones["{pose_bone.name}"].{prop}'
+
+        fcurve_a = next((fc for fc in action.fcurves if fc.data_path == data_path and fc.array_index == axis_a), None)
+        fcurve_b = next((fc for fc in action.fcurves if fc.data_path == data_path and fc.array_index == axis_b), None)
+
+        if not fcurve_a or not fcurve_b:
+            self.report({'WARNING'}, f"No keyframes found for {prop} axes {self.axis_a}, {self.axis_b}.")
+            return {'CANCELLED'}
+
+        # Swap keyframes
+        a_data = [(kp.co[0], kp.co[1]) for kp in fcurve_a.keyframe_points]
+        b_data = [(kp.co[0], kp.co[1]) for kp in fcurve_b.keyframe_points]
+
+        fcurve_a.keyframe_points.clear()
+        fcurve_b.keyframe_points.clear()
+
+        for frame, value in b_data:
+            fcurve_a.keyframe_points.insert(frame, value)
+        for frame, value in a_data:
+            fcurve_b.keyframe_points.insert(frame, value)
+
+        fcurve_a.update()
+        fcurve_b.update()
+
+        self.report({'INFO'}, f"Swapped {prop} axis {self.axis_a} with {self.axis_b}")
+        return {'FINISHED'}
+
+
+
 # Register and Unregister
 classes = [
     CopyBoneKeyframesOperator,
@@ -596,6 +707,7 @@ classes = [
     FlipKeyframeAxisOperator,
     RemapAllBonesOperator,
     SwapKeyframesOperator,
+    SwapKeyframeAxisOperator,
 ]
 
 def register():
@@ -711,6 +823,12 @@ def register():
     )
     bpy.types.VIEW3D_MT_pose_context_menu.append(pose_context_menu)
 
+    bpy.types.Scene.use_quaternion_rotation = bpy.props.BoolProperty(
+    name="Use Quaternions",
+    description="Swap rotation axes using quaternion channels instead of Euler",
+    default=False,
+    )
+
 def unregister():
     for cls in classes:
         bpy.utils.unregister_class(cls)
@@ -727,6 +845,8 @@ def unregister():
     del bpy.types.Scene.secondary_mapper
     del bpy.types.Scene.secondary_suffix
     bpy.types.VIEW3D_MT_pose_context_menu.remove(pose_context_menu)
+    del bpy.types.Scene.use_quaternion_rotation
+
 
 if __name__ == "__main__":
     register()
