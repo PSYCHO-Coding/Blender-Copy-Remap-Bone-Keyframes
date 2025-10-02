@@ -1,5 +1,6 @@
 # Blender Plugin: Copy Bone Keyframes with Axis Mapping
 # This plugin allows users to copy keyframes from one bone to another with axis remapping.
+# And many more new helper/accessibility features to help with animations.
 
 bl_info = {
     "name": "Psycho's Helpers",
@@ -158,7 +159,7 @@ class CopyBoneKeyframesPanel(bpy.types.Panel):
     bl_idname = "VIEW3D_PT_copy_bone_keyframes"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Psycho''s Helpers'
+    bl_category = 'Psychos Helpers'
 
     def draw(self, context):
         layout = self.layout
@@ -227,7 +228,7 @@ class CopyBoneKeyframesPanel(bpy.types.Panel):
 
 class SwapAndFlipKeyframesPanel(bpy.types.Panel):
     """Creates a Panel in the 3D Viewport for axis mapping."""
-    bl_label = "Swap And Flip Keyframes"
+    bl_label = "Psychos Helpers"
     bl_idname = "VIEW3D_PT_swap_and_flip_keyframes"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -297,6 +298,79 @@ class SwapAndFlipKeyframesPanel(bpy.types.Panel):
         row = layout.row()
         layout.prop(context.scene, "use_quaternion_rotation", text="Use Quaternions")
 
+        layout.label(text="Direct Copy (Location):")
+        row = layout.row()
+        op = row.operator("object.copy_axis_to_axis", text="X → Y")
+        op.source_axis, op.target_axis = 0, 1
+        op = row.operator("object.copy_axis_to_axis", text="X → Z")
+        op.source_axis, op.target_axis = 0, 2
+
+        row = layout.row()
+        op = row.operator("object.copy_axis_to_axis", text="Y → X")
+        op.source_axis, op.target_axis = 1, 0
+        op = row.operator("object.copy_axis_to_axis", text="Y → Z")
+        op.source_axis, op.target_axis = 1, 2
+
+        row = layout.row()
+        op = row.operator("object.copy_axis_to_axis", text="Z → X")
+        op.source_axis, op.target_axis = 2, 0
+        op = row.operator("object.copy_axis_to_axis", text="Z → Y")
+        op.source_axis, op.target_axis = 2, 1
+
+        layout.label(text="45° Scaling (Location):")
+        row = layout.row()
+        row.prop(context.scene, "use_x_45d")
+        row.prop(context.scene, "use_y_45d")
+        row.prop(context.scene, "use_z_45d")
+        layout.operator("object.calc_45d_scale", text="Calc 45°")
+
+class CopyAxisToAxisOperator(bpy.types.Operator):
+    """Copy keyframes from one axis to another for the active bone"""
+    bl_idname = "object.copy_axis_to_axis"
+    bl_label = "Copy Axis → Axis"
+
+    source_axis: bpy.props.IntProperty()
+    target_axis: bpy.props.IntProperty()
+
+    def execute(self, context):
+        obj = context.object
+        if not obj or obj.type != 'ARMATURE':
+            self.report({'ERROR'}, "Active object is not an armature.")
+            return {'CANCELLED'}
+
+        pose_bone = context.active_pose_bone
+        if not pose_bone:
+            self.report({'ERROR'}, "No active pose bone.")
+            return {'CANCELLED'}
+
+        action = obj.animation_data.action if obj.animation_data else None
+        if not action:
+            self.report({'ERROR'}, "No action found on this object.")
+            return {'CANCELLED'}
+
+        data_path = f'pose.bones["{pose_bone.name}"].location'
+        fcurve_src = next((fc for fc in action.fcurves if fc.data_path == data_path and fc.array_index == self.source_axis), None)
+        if not fcurve_src:
+            self.report({'WARNING'}, f"No source keyframes found for axis {self.source_axis}.")
+            return {'CANCELLED'}
+
+        fcurve_tgt = next((fc for fc in action.fcurves if fc.data_path == data_path and fc.array_index == self.target_axis), None)
+        if not fcurve_tgt:
+            fcurve_tgt = action.fcurves.new(data_path=data_path, index=self.target_axis)
+
+        # clear old keys on target
+        fcurve_tgt.keyframe_points.clear()
+
+        # copy with handles
+        for kp in fcurve_src.keyframe_points:
+            data = copy_keyframe_data(kp)
+            kp_new = fcurve_tgt.keyframe_points.insert(data['co'][0], data['co'][1])
+            apply_keyframe_data(kp_new, data)
+
+        fcurve_tgt.update()
+        self.report({'INFO'}, f"Copied axis {self.source_axis} → {self.target_axis} for {pose_bone.name}")
+        return {'FINISHED'}
+
 class FlipKeyframeAxisOperator(bpy.types.Operator):
     """Flip Keyframe Curve Values for a Specific Axis and Property"""
     bl_idname = "object.flip_keyframe_axis"
@@ -351,6 +425,56 @@ class FlipKeyframeAxisOperator(bpy.types.Operator):
         self.report({'INFO'}, f"Flipped {prop} axis {axis} keyframes for {pose_bone.name}")
         return {'FINISHED'}
 
+import math
+
+class Calc45dScaleOperator(bpy.types.Operator):
+    """Scale selected location axes so combined motion keeps same distance (45° / n-axes)"""
+    bl_idname = "object.calc_45d_scale"
+    bl_label = "Calc 45° Scaling"
+
+    def execute(self, context):
+        obj = context.object
+        if not obj or obj.type != 'ARMATURE':
+            self.report({'ERROR'}, "Active object is not an armature.")
+            return {'CANCELLED'}
+
+        pose_bone = context.active_pose_bone
+        if not pose_bone:
+            self.report({'ERROR'}, "No active pose bone.")
+            return {'CANCELLED'}
+
+        action = obj.animation_data.action if obj.animation_data else None
+        if not action:
+            self.report({'ERROR'}, "No action found on this object.")
+            return {'CANCELLED'}
+
+        # Which axes are enabled
+        axes = []
+        if context.scene.use_x_45d: axes.append(0)
+        if context.scene.use_y_45d: axes.append(1)
+        if context.scene.use_z_45d: axes.append(2)
+
+        if len(axes) < 2:
+            self.report({'WARNING'}, "Pick at least 2 axes to apply 45° scaling.")
+            return {'CANCELLED'}
+
+        scale = 1.0 / math.sqrt(len(axes))
+
+        for axis in axes:
+            data_path = f'pose.bones["{pose_bone.name}"].location'
+            fcurve = next((fc for fc in action.fcurves 
+                          if fc.data_path == data_path and fc.array_index == axis), None)
+            if not fcurve:
+                continue
+
+            for kp in fcurve.keyframe_points:
+                kp.co[1] *= scale
+                kp.handle_left[1] *= scale
+                kp.handle_right[1] *= scale
+            fcurve.update()
+
+        self.report({'INFO'}, f"Scaled {len(axes)} axes by {scale:.4f} for 45° motion.")
+        return {'FINISHED'}
 
 class RemapAllBonesOperator(bpy.types.Operator):
     """Remap all bones based on mapper and suffix rules."""
@@ -678,23 +802,27 @@ class SwapKeyframeAxisOperator(bpy.types.Operator):
             self.report({'WARNING'}, f"No keyframes found for {prop} axes {self.axis_a}, {self.axis_b}.")
             return {'CANCELLED'}
 
-        # Swap keyframes
-        a_data = [(kp.co[0], kp.co[1]) for kp in fcurve_a.keyframe_points]
-        b_data = [(kp.co[0], kp.co[1]) for kp in fcurve_b.keyframe_points]
+        # --- NEW: Use helper functions to preserve full keyframe data ---
+        a_data = [copy_keyframe_data(kp) for kp in fcurve_a.keyframe_points]
+        b_data = [copy_keyframe_data(kp) for kp in fcurve_b.keyframe_points]
 
         fcurve_a.keyframe_points.clear()
         fcurve_b.keyframe_points.clear()
 
-        for frame, value in b_data:
-            fcurve_a.keyframe_points.insert(frame, value)
-        for frame, value in a_data:
-            fcurve_b.keyframe_points.insert(frame, value)
+        for data in b_data:
+            kp = fcurve_a.keyframe_points.insert(data['co'][0], data['co'][1])
+            apply_keyframe_data(kp, data)
+
+        for data in a_data:
+            kp = fcurve_b.keyframe_points.insert(data['co'][0], data['co'][1])
+            apply_keyframe_data(kp, data)
 
         fcurve_a.update()
         fcurve_b.update()
 
         self.report({'INFO'}, f"Swapped {prop} axis {self.axis_a} with {self.axis_b}")
         return {'FINISHED'}
+
 
 
 
@@ -708,6 +836,8 @@ classes = [
     RemapAllBonesOperator,
     SwapKeyframesOperator,
     SwapKeyframeAxisOperator,
+    Calc45dScaleOperator,
+    CopyAxisToAxisOperator,
 ]
 
 def register():
@@ -828,6 +958,13 @@ def register():
     description="Swap rotation axes using quaternion channels instead of Euler",
     default=False,
     )
+    bpy.types.Scene.use_x_45d = bpy.props.BoolProperty(
+        name="X Axis", description="Include X axis for 45° scaling", default=False)
+    bpy.types.Scene.use_y_45d = bpy.props.BoolProperty(
+        name="Y Axis", description="Include Y axis for 45° scaling", default=False)
+    bpy.types.Scene.use_z_45d = bpy.props.BoolProperty(
+        name="Z Axis", description="Include Z axis for 45° scaling", default=False)
+
 
 def unregister():
     for cls in classes:
@@ -846,6 +983,10 @@ def unregister():
     del bpy.types.Scene.secondary_suffix
     bpy.types.VIEW3D_MT_pose_context_menu.remove(pose_context_menu)
     del bpy.types.Scene.use_quaternion_rotation
+    del bpy.types.Scene.use_x_45d
+    del bpy.types.Scene.use_y_45d
+    del bpy.types.Scene.use_z_45d
+
 
 
 if __name__ == "__main__":
